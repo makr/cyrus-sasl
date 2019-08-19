@@ -80,6 +80,7 @@ AC_ARG_ENABLE(cmulocal,
 AC_ARG_ENABLE(sample,
               [AC_HELP_STRING([--enable-sample],
                               [compile sample code [[yes]]])],
+              [],
               enable_sample=yes)
 
 AC_ARG_ENABLE(obsolete_cram_attr,
@@ -1091,26 +1092,23 @@ AC_SUBST(SASL_STATIC_OBJS)
 AC_SUBST(SASL_STATIC_LIBS)
 
 AC_ARG_WITH(plugindir, [  --with-plugindir=DIR    set the directory where plugins will
-                          be found [[/usr/lib/sasl2]] ],
+                          be found [[LIBDIR/sasl2]] ],
   plugindir=$withval,
-  plugindir=/usr/lib/sasl2)
-AC_DEFINE_UNQUOTED(PLUGINDIR, "$plugindir", [Runtime plugin location])
+  plugindir='${libdir}/sasl2')
 AC_SUBST(plugindir)
 
 AC_ARG_WITH(configdir, [   --with-configdir=DIR    set the directory where config files will
-                          be found [/usr/lib/sasl2] ],
+                          be found [PLUGINDIR:SYSCONFDIR/sasl2] ],
   configdir=$withval,
-  configdir=$plugindir:/etc/sasl2)
-AC_DEFINE_UNQUOTED(CONFIGDIR, "$configdir", [Runtime config file location])
+  configdir='${plugindir}:${sysconfdir}/sasl2')
 AC_SUBST(configdir)
 
-dnl look for rc4 libraries. we accept the CMU one or one from openSSL
-AC_ARG_WITH(rc4, [  --with-rc4              use internal rc4 routines [[yes]] ],
+AC_ARG_WITH(rc4, [  --with-rc4              use rc4 routines [[yes]] ],
 	with_rc4=$withval,
 	with_rc4=yes)
 
 if test "$with_rc4" != no; then
-    AC_DEFINE(WITH_RC4,[],[Use internal RC4 implementation?])
+    AC_DEFINE(WITH_RC4,[],[Use RC4])
 fi
 
 building_for_macosx=no
@@ -1228,6 +1226,7 @@ AC_SUBST(GETSUBOPT)
 dnl Check for snprintf
 sasl_cv_snprintf=yes
 SNPRINTFOBJS=""
+LTSNPRINTFOBJS=""
 AC_CHECK_FUNC(snprintf, [AC_DEFINE(HAVE_SNPRINTF,[],[Does the system have snprintf()?])], [sasl_cv_snprintf=yes])
 AC_CHECK_FUNC(vsnprintf, [AC_DEFINE(HAVE_VSNPRINTF,[],[Does the system have vsnprintf()?])], [sasl_cv_snprintf=yes])
 if test $sasl_cv_snprintf = no; then
@@ -1290,7 +1289,29 @@ IPv6_CHECK_SOCKLEN_T()
 
 #AC_FUNC_MEMCMP
 #AC_FUNC_VPRINTF
-AC_CHECK_FUNCS(gethostname getdomainname getpwnam getspnam gettimeofday inet_aton memcpy mkdir select socket strchr strdup strerror strspn strstr strtol jrand48 getpassphrase asprintf strlcat strlcpy)
+AC_CHECK_FUNCS(gethostname getdomainname getpwnam getspnam gettimeofday inet_aton memcpy memmem mkdir select socket strchr strdup strerror strspn strstr strtol jrand48 getpassphrase asprintf strlcat strlcpy)
+
+if test $ac_cv_func_getspnam = yes; then
+	AC_MSG_CHECKING(if getpwnam_r/getspnam_r take 5 arguments)
+	AC_TRY_COMPILE(
+		[
+#include <sys/types.h>
+#include <pwd.h>
+#include <shadow.h>
+		],
+		[
+struct passwd *pw;
+struct passwd pwbuf;
+char pwdata[512];
+(void) getpwnam_r("bin", &pwbuf, pwdata, sizeof(pwdata), &pw);
+		],
+		[AC_MSG_RESULT(yes)
+		 AC_DEFINE(GETXXNAM_R_5ARG, 1,
+			[Define if your getpwnam_r()/getspnam_r()
+			functions take 5 arguments])],
+		[AC_MSG_RESULT(no)]
+	)
+fi
 
 if test $ac_cv_func_getspnam = yes; then
 	AC_MSG_CHECKING(if getpwnam_r/getspnam_r take 5 arguments)

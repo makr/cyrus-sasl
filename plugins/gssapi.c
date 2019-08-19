@@ -497,7 +497,7 @@ gssapi_decode_packet(void *context,
     }
     
     if (output_token->value) {
-	if (output) {
+	if (output && outputlen) {
 	    result = _plug_buf_alloc(text->utils, &text->decode_once_buf,
 				     &text->decode_once_buf_len,
 				     *outputlen);
@@ -934,7 +934,7 @@ gssapi_server_mech_authneg(context_t *text,
 	*serveroutlen = output_token->length;
     }
     if (output_token->value) {
-	if (serverout) {
+	if (serverout && serveroutlen) {
 	    ret = _plug_buf_alloc(text->utils, &(text->out_buf),
 				  &(text->out_buf_len), *serveroutlen);
 	    if(ret != SASL_OK) {
@@ -950,7 +950,7 @@ gssapi_server_mech_authneg(context_t *text,
 	GSS_LOCK_MUTEX_CTX(params->utils, text);
 	gss_release_buffer(&min_stat, output_token);
 	GSS_UNLOCK_MUTEX_CTX(params->utils, text);
-    } else {
+    } else if (serverout && serveroutlen) {
 	/* No output token, send an empty string */
 	*serverout = GSSAPI_BLANK_STRING;
 	*serveroutlen = 0;
@@ -1256,7 +1256,7 @@ gssapi_server_mech_ssfcap(context_t *text,
     if (serveroutlen)
 	*serveroutlen = output_token->length;
     if (output_token->value) {
-	if (serverout) {
+	if (serverout && serveroutlen) {
 	    ret = _plug_buf_alloc(text->utils, &(text->out_buf),
 				  &(text->out_buf_len), *serveroutlen);
 	    if(ret != SASL_OK) {
@@ -1662,9 +1662,11 @@ static int gssapi_client_mech_step(void *conn_context,
     input_token->value = NULL; 
     input_token->length = 0;
     gss_cred_id_t client_creds = (gss_cred_id_t)params->gss_creds;
-    
-    *clientout = NULL;
-    *clientoutlen = 0;
+
+    if (clientout)
+        *clientout = NULL;
+    if (clientoutlen)
+        *clientoutlen = 0;
     
     params->utils->log(params->utils->conn, SASL_LOG_DEBUG,
 		       "GSSAPI client step %d", text->state);
@@ -1695,8 +1697,7 @@ static int gssapi_client_mech_step(void *conn_context,
 		/* make the prompt list */
 		int result =
 		    _plug_make_prompts(params->utils, prompt_need,
-				       user_result == SASL_INTERACT ?
-				       "Please enter your authorization name" : NULL, NULL,
+				       "Please enter your authorization name", NULL,
 				       NULL, NULL,
 				       NULL, NULL,
 				       NULL, NULL, NULL,
@@ -1759,10 +1760,10 @@ static int gssapi_client_mech_step(void *conn_context,
 	}
 
 	/* Setup req_flags properly */
-	req_flags = GSS_C_INTEG_FLAG;
+	req_flags = GSS_C_MUTUAL_FLAG | GSS_C_SEQUENCE_FLAG;
 	if (params->props.max_ssf > params->external_ssf) {
 	    /* We are requesting a security layer */
-	    req_flags |= GSS_C_MUTUAL_FLAG | GSS_C_SEQUENCE_FLAG;
+	    req_flags |= GSS_C_INTEG_FLAG;
 	    /* Any SSF bigger than 1 is confidentiality. */
 	    /* Let's check if the client of the API requires confidentiality,
 	       and it wasn't already provided by an external layer */
@@ -1774,6 +1775,27 @@ static int gssapi_client_mech_step(void *conn_context,
 
 	if (params->props.security_flags & SASL_SEC_PASS_CREDENTIALS) {
 	    req_flags = req_flags |  GSS_C_DELEG_FLAG;
+	}
+
+	/* If caller didn't provide creds already */
+	if (client_creds == GSS_C_NO_CREDENTIAL) {
+	    GSS_LOCK_MUTEX_CTX(params->utils, text);
+	    maj_stat = gss_acquire_cred(&min_stat,
+					text->server_name,
+					GSS_C_INDEFINITE,
+					GSS_C_NO_OID_SET,
+					GSS_C_INITIATE,
+					&text->client_creds, 
+					NULL, 
+					NULL);
+	    GSS_UNLOCK_MUTEX_CTX(params->utils, text);
+
+	    if (GSS_ERROR(maj_stat)) {
+		sasl_gss_seterror(text->utils, maj_stat, min_stat);
+		sasl_gss_free_context_contents(text);
+		return SASL_FAIL;
+	    }
+	    client_creds = text->client_creds;
 	}
 
 	GSS_LOCK_MUTEX_CTX(params->utils, text);
@@ -1820,11 +1842,12 @@ static int gssapi_client_mech_step(void *conn_context,
 	    text->utils->seterror(text->utils->conn, SASL_LOG_WARN, "GSSAPI warning: no credentials were passed");
 	    /* not a fatal error */
 	}
-  	    
-	*clientoutlen = output_token->length;
+
+        if (clientoutlen)
+            *clientoutlen = output_token->length;
 	    
 	if (output_token->value) {
-	    if (clientout) {
+	    if (clientout && clientoutlen) {
 		ret = _plug_buf_alloc(text->utils, &(text->out_buf),
 				      &(text->out_buf_len), *clientoutlen);
 		if(ret != SASL_OK) {
@@ -2130,7 +2153,7 @@ static int gssapi_client_mech_step(void *conn_context,
 	    *clientoutlen = output_token->length;
 	}
 	if (output_token->value) {
-	    if (clientout) {
+	    if (clientout && clientoutlen) {
 		ret = _plug_buf_alloc(text->utils,
 				      &(text->out_buf),
 				      &(text->out_buf_len),
@@ -2225,16 +2248,55 @@ static sasl_client_plug_t gssapi_client_plugins[] =
 #endif
 };
 
-int gssapiv2_client_plug_init(const sasl_utils_t *utils __attribute__((unused)), 
+int gssapiv2_client_plug_init(
+#ifndef HAVE_GSSKRB5_REGISTER_ACCEPTOR_IDENTITY
+    const sasl_utils_t *utils __attribute__((unused)),
+#else
+    const sasl_utils_t *utils,
+#endif
 			      int maxversion,
 			      int *out_version, 
 			      sasl_client_plug_t **pluglist,
 			      int *plugcount)
 {
+#ifdef HAVE_GSSKRB5_REGISTER_ACCEPTOR_IDENTITY
+    const char *keytab = NULL;
+    char keytab_path[1024];
+    unsigned int rl;
+#endif
+
     if (maxversion < SASL_CLIENT_PLUG_VERSION) {
 	SETERROR(utils, "Version mismatch in GSSAPI");
 	return SASL_BADVERS;
     }
+
+#ifdef HAVE_GSSKRB5_REGISTER_ACCEPTOR_IDENTITY
+    /* unfortunately, we don't check for readability of keytab if it's
+       the standard one, since we don't know where it is */
+    
+    /* FIXME: This code is broken */
+    
+    utils->getopt(utils->getopt_context, "GSSAPI", "keytab", &keytab, &rl);
+    if (keytab != NULL) {
+	if (access(keytab, R_OK) != 0) {
+	    utils->log(NULL, SASL_LOG_ERR,
+		       "Could not find keytab file: %s: %m", keytab);
+	    return SASL_FAIL;
+	}
+	
+	if(strlen(keytab) > sizeof(keytab_path)) {
+	    utils->log(NULL, SASL_LOG_ERR,
+		       "path to keytab is > %zu characters",
+		       sizeof(keytab_path));
+	    return SASL_BUFOVER;
+	}
+	
+	strncpy(keytab_path, keytab, sizeof(keytab_path));
+	keytab_path[sizeof(keytab_path) - 1] = '\0';
+	
+	gsskrb5_register_acceptor_identity(keytab_path);
+    }
+#endif
     
     *out_version = SASL_CLIENT_PLUG_VERSION;
     *pluglist = gssapi_client_plugins;
